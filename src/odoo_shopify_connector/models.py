@@ -1,50 +1,30 @@
 """
 Modelos Pydantic para validación de datos del conector Odoo-Shopify.
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
-class OdooWebhookPayload(BaseModel):
+class OdooStockQuant(BaseModel):
     """
-    Modelo para validar el payload del webhook de Odoo.
-
-    Este modelo valida que el webhook contenga el SKU del producto
-    y la cantidad disponible de stock.
+    Modelo para representar un registro de stock.quant de Odoo.
     """
-    sku: str = Field(
-        alias="product_reference_code",
-        description="SKU del producto (debe coincidir con Shopify)",
-        min_length=1
-    )
-    quantity: int = Field(
-        alias="available_quantity",
-        description="Cantidad total disponible en Odoo",
-        ge=0
-    )
-    location_id: int | None = Field(
-        default=None,
-        alias="location_id",
-        description="ID de ubicación en Odoo (opcional, para logging)"
-    )
+    product_id: int = Field(description="ID del producto en Odoo")
+    product_name: str = Field(description="Nombre del producto")
+    sku: str = Field(description="SKU del producto (default_code)")
+    quantity: float = Field(description="Cantidad disponible", ge=0)
+    location_id: int = Field(description="ID de ubicación en Odoo")
 
     class Config:
         """Configuración del modelo"""
-        populate_by_name = True
         json_schema_extra = {
             "example": {
-                "product_reference_code": "MANT-KAR-500",
-                "available_quantity": 25,
-                "location_id": 8
+                "product_id": 123,
+                "product_name": "Manteca de Karité",
+                "sku": "MANT-KAR-500",
+                "quantity": 25.0,
+                "location_id": 28
             }
         }
-
-    @field_validator('sku')
-    @classmethod
-    def validate_sku(cls, v: str) -> str:
-        """Validar que el SKU no esté vacío después de strip"""
-        if not v.strip():
-            raise ValueError("SKU no puede estar vacío")
-        return v.strip()
 
 
 class ShopifyInventoryUpdate(BaseModel):
@@ -63,12 +43,23 @@ class ShopifyInventoryUpdate(BaseModel):
         return self.delta != 0
 
 
-class WebhookResponse(BaseModel):
+class SyncResult(BaseModel):
     """
-    Modelo para la respuesta del webhook.
+    Modelo para el resultado de una sincronización.
     """
     success: bool = Field(description="Indica si la operación fue exitosa")
     message: str = Field(description="Mensaje descriptivo del resultado")
     sku: str | None = Field(default=None, description="SKU procesado")
     quantity_updated: int | None = Field(default=None, description="Cantidad actualizada")
     delta: int | None = Field(default=None, description="Ajuste aplicado")
+
+
+class SyncSummary(BaseModel):
+    """
+    Modelo para el resumen de una sincronización completa.
+    """
+    total_products: int = Field(description="Total de productos procesados")
+    successful: int = Field(description="Productos sincronizados exitosamente")
+    failed: int = Field(description="Productos que fallaron")
+    skipped: int = Field(description="Productos omitidos (sin SKU)")
+    results: list[SyncResult] = Field(default_factory=list, description="Resultados individuales")

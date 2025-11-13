@@ -12,6 +12,28 @@ class Settings(BaseSettings):
     """
     Configuración de la aplicación cargada desde variables de entorno.
     """
+    # Configuración de Odoo
+    ODOO_URL: str = Field(
+        ...,
+        description="URL de Odoo (ej: https://odoo.miempresa.com)"
+    )
+    ODOO_DATABASE: str = Field(
+        ...,
+        description="Nombre de la base de datos de Odoo"
+    )
+    ODOO_USERNAME: str = Field(
+        ...,
+        description="Usuario de Odoo"
+    )
+    ODOO_PASSWORD: str = Field(
+        ...,
+        description="Contraseña de Odoo"
+    )
+    ODOO_LOCATION_ID: int = Field(
+        default=28,
+        description="ID de la ubicación/bodega a sincronizar"
+    )
+
     # Configuración de Shopify
     SHOPIFY_STORE_URL: str = Field(
         ...,
@@ -41,6 +63,15 @@ class Settings(BaseSettings):
         default="INFO",
         description="Nivel de logging (DEBUG, INFO, WARNING, ERROR)"
     )
+
+    @validator('ODOO_URL')
+    def validate_odoo_url(cls, v):
+        """Valida que la URL de Odoo tenga el formato correcto"""
+        if not v.startswith(('http://', 'https://')):
+            raise ValueError("ODOO_URL debe comenzar con http:// o https://")
+        if v.endswith('/'):
+            v = v[:-1]  # Remover trailing slash
+        return v
 
     @validator('SHOPIFY_STORE_URL')
     def validate_store_url(cls, v):

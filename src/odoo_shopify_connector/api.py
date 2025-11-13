@@ -1,16 +1,17 @@
 """
 API FastAPI para el conector Odoo-Shopify.
 
-Provee un endpoint para recibir webhooks de Odoo y sincronizar stock con Shopify.
+Provee endpoints para sincronizar inventario de Odoo a Shopify.
 """
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 
-from .models import OdooWebhookPayload, WebhookResponse
-from .shopify_service import ShopifyService, ShopifyGraphQLError
+from .models import SyncSummary
+from .sync_service import SyncService
+from .odoo_client import OdooConnectionError
 from .config import settings
 
 # Configurar logging
@@ -28,8 +29,9 @@ async def lifespan(app: FastAPI):
     Inicializa y limpia recursos.
     """
     logger.info("Iniciando conector Odoo-Shopify...")
+    logger.info(f"Odoo: {settings.ODOO_URL} - DB: {settings.ODOO_DATABASE}")
     logger.info(f"Shopify Store: {settings.SHOPIFY_STORE_URL}")
-    logger.info(f"API Version: {settings.SHOPIFY_API_VERSION}")
+    logger.info(f"Ubicación de Odoo a sincronizar: {settings.ODOO_LOCATION_ID}")
     yield
     logger.info("Apagando conector Odoo-Shopify...")
 
@@ -37,13 +39,13 @@ async def lifespan(app: FastAPI):
 # Crear aplicación FastAPI
 app = FastAPI(
     title="Conector Odoo-Shopify Stock",
-    description="API para sincronizar inventario de Odoo a Shopify",
-    version="1.0.0",
+    description="API para sincronizar inventario de Odoo a Shopify mediante consulta directa",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-# Instancia del servicio de Shopify (singleton)
-shopify_service = ShopifyService()
+# Instancia del servicio de sincronización (singleton)
+sync_service = SyncService()
 
 
 @app.get("/")
@@ -54,7 +56,9 @@ async def root():
     return {
         "service": "Odoo-Shopify Stock Connector",
         "status": "running",
-        "version": "1.0.0"
+        "version": "2.0.0",
+        "mode": "pull",
+        "description": "Consulta inventario de Odoo y sincroniza con Shopify"
     }
 
 
@@ -66,95 +70,111 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/test-connections")
+async def test_connections():
+    """
+    Prueba las conexiones con Odoo y Shopify.
+
+    Returns:
+        Estado de las conexiones
+    """
+    logger.info("Probando conexiones...")
+    try:
+        result = sync_service.test_connections()
+        return result
+    except Exception as e:
+        logger.exception(f"Error al probar conexiones: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al probar conexiones: {str(e)}"
+        )
+
+
 @app.post(
-    "/webhook/odoo/stock",
-    response_model=WebhookResponse,
+    "/sync",
+    response_model=SyncSummary,
     status_code=status.HTTP_200_OK,
     responses={
         200: {
-            "description": "Stock sincronizado exitosamente",
-            "model": WebhookResponse
-        },
-        400: {
-            "description": "Payload inválido"
+            "description": "Sincronización completada (puede haber productos fallidos)",
+            "model": SyncSummary
         },
         500: {
-            "description": "Error al sincronizar con Shopify"
+            "description": "Error al conectar con Odoo"
         }
     }
 )
-async def odoo_stock_webhook(payload: OdooWebhookPayload) -> WebhookResponse:
+async def sync_inventory() -> SyncSummary:
     """
-    Endpoint para recibir webhooks de Odoo cuando el stock cambia.
+    Sincroniza todo el inventario de la ubicación de Odoo con Shopify.
 
     Este endpoint:
-    1. Valida el payload del webhook usando Pydantic
-    2. Busca el producto en Shopify por SKU
-    3. Calcula el delta de inventario
-    4. Ajusta el stock en Shopify
-
-    Args:
-        payload: Datos del webhook de Odoo (validado por Pydantic)
+    1. Lee todo el inventario de la ubicación configurada en Odoo
+    2. Para cada producto con SKU, sincroniza el stock con Shopify
+    3. Retorna un resumen detallado de la operación
 
     Returns:
-        WebhookResponse: Resultado de la sincronización
+        SyncSummary: Resumen de la sincronización con resultados por producto
 
     Raises:
-        HTTPException 400: Si el payload es inválido
-        HTTPException 500: Si hay errores al sincronizar con Shopify
+        HTTPException 500: Si hay error al conectar con Odoo
     """
-    logger.info(
-        f"Webhook recibido de Odoo - SKU: {payload.sku}, "
-        f"Cantidad: {payload.quantity}"
-    )
+    logger.info("Iniciando sincronización manual de inventario...")
 
     try:
-        # Sincronizar stock con Shopify
-        result = shopify_service.sync_stock(
-            sku=payload.sku,
-            new_quantity=payload.quantity
-        )
+        summary = sync_service.sync_all_inventory()
+        logger.info(f"Sincronización completada: {summary.successful}/{summary.total_products} exitosos")
+        return summary
 
-        # Si la sincronización falló, devolver error 500
-        if not result["success"]:
-            logger.error(f"Error al sincronizar: {result['message']}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=result["message"]
-            )
-
-        # Sincronización exitosa
-        logger.info(f"Stock sincronizado exitosamente: {result}")
-        return WebhookResponse(
-            success=True,
-            message=result["message"],
-            sku=result.get("sku"),
-            quantity_updated=result.get("quantity_updated"),
-            delta=result.get("delta")
-        )
-
-    except ShopifyGraphQLError as e:
-        # Error específico de Shopify GraphQL
-        logger.error(f"Error de Shopify GraphQL: {e}")
+    except OdooConnectionError as e:
+        logger.error(f"Error de conexión con Odoo: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al comunicar con Shopify: {str(e)}"
+            detail=f"Error al conectar con Odoo: {str(e)}"
         )
 
     except Exception as e:
-        # Error inesperado
-        logger.exception(f"Error inesperado al procesar webhook: {e}")
+        logger.exception(f"Error inesperado durante sincronización: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"
         )
 
 
+@app.post("/sync/async")
+async def sync_inventory_async(background_tasks: BackgroundTasks):
+    """
+    Inicia la sincronización de inventario en segundo plano.
+
+    Este endpoint retorna inmediatamente y ejecuta la sincronización
+    en background. Útil para evitar timeouts en sincronizaciones largas.
+
+    Returns:
+        Mensaje de confirmación
+    """
+    logger.info("Iniciando sincronización en background...")
+
+    def run_sync():
+        try:
+            summary = sync_service.sync_all_inventory()
+            logger.info(
+                f"Sincronización background completada: {summary.successful}/{summary.total_products} exitosos"
+            )
+        except Exception as e:
+            logger.exception(f"Error en sincronización background: {e}")
+
+    background_tasks.add_task(run_sync)
+
+    return {
+        "message": "Sincronización iniciada en segundo plano",
+        "status": "processing"
+    }
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     """
     Handler personalizado para HTTPException.
-    Asegura que Odoo reciba respuestas consistentes.
     """
     return JSONResponse(
         status_code=exc.status_code,

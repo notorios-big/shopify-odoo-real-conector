@@ -1,33 +1,45 @@
 # Conector de Stock Odoo-Shopify
 
-Conector unidireccional (Odoo → Shopify) para sincronización de inventario en tiempo real.
+Conector unidireccional (Odoo → Shopify) para sincronización de inventario mediante consulta directa a la API de Odoo.
 
 ## Descripción
 
-Este conector implementa una arquitectura simple basada en webhooks para mantener el inventario de Shopify sincronizado con Odoo. Odoo es la única fuente de verdad, y cada cambio de stock dispara una actualización automática en Shopify.
+Este conector lee el inventario completo de una ubicación específica en Odoo y sincroniza las cantidades con Shopify. El conector **consulta activamente a Odoo** (modelo pull) en lugar de esperar webhooks.
 
 ### Arquitectura
 
 ```
-┌──────────────┐         ┌──────────────────┐         ┌──────────────┐
-│              │  HTTP   │                  │ GraphQL │              │
-│     Odoo     │ ──────> │  Conector API    │ ──────> │   Shopify    │
-│   (Emisor)   │ POST    │  (FastAPI)       │ Mutation│  (Receptor)  │
-│              │         │                  │         │              │
-└──────────────┘         └──────────────────┘         └──────────────┘
+┌──────────────┐                    ┌──────────────────┐                    ┌──────────────┐
+│              │  XML-RPC           │                  │  GraphQL           │              │
+│     Odoo     │ <───────────────── │  Conector API    │ ─────────────────> │   Shopify    │
+│  (Fuente)    │  Query Inventory   │  (FastAPI)       │  Update Inventory  │  (Destino)   │
+│              │                    │                  │                    │              │
+└──────────────┘                    └──────────────────┘                    └──────────────┘
 ```
 
 ### Flujo de Sincronización
 
-1. **Odoo**: Cuando el stock cambia en `stock.quant`, dispara un webhook HTTP POST
-2. **Conector**: Recibe el webhook, valida los datos, y orquesta la actualización
-3. **Shopify**: Recibe la mutación GraphQL y ajusta el inventario
+1. **Conector** llama a la API XML-RPC de Odoo para leer el inventario de la ubicación 28
+2. **Conector** procesa cada producto con SKU
+3. **Conector** consulta Shopify GraphQL para obtener el stock actual
+4. **Conector** calcula el delta y ajusta el inventario en Shopify
+
+## Características
+
+✅ Consulta directa a Odoo via XML-RPC
+✅ Sincronización de ubicación específica (ID: 28)
+✅ Búsqueda de productos por SKU
+✅ Actualización automática de inventario en Shopify
+✅ API REST con endpoints de sincronización
+✅ CLI para sincronización desde línea de comandos
+✅ Logging detallado de operaciones
+✅ Soporte para sincronización en background
 
 ## Requisitos
 
 - Python 3.13+
+- Acceso a Odoo (usuario y contraseña)
 - Cuenta de Shopify con acceso a Admin API
-- Odoo con capacidad de configurar Acciones Automatizadas
 
 ## Instalación
 
@@ -62,15 +74,33 @@ cp .env.example .env
 Edita `.env` y configura:
 
 ```bash
+# Odoo
+ODOO_URL=https://odoo.tuempresa.com
+ODOO_DATABASE=produccion
+ODOO_USERNAME=admin@tuempresa.com
+ODOO_PASSWORD=tu_password
+ODOO_LOCATION_ID=28
+
+# Shopify
 SHOPIFY_STORE_URL=https://tu-tienda.myshopify.com
 SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 SHOPIFY_API_VERSION=2025-10
+
+# Servidor
 HOST=0.0.0.0
 PORT=8000
 LOG_LEVEL=INFO
 ```
 
-#### Obtener el Access Token de Shopify
+#### Obtener credenciales de Odoo
+
+- **URL**: La URL de tu instancia de Odoo
+- **Database**: El nombre de la base de datos (si no sabes cuál es, pregunta al administrador)
+- **Username**: Tu usuario de Odoo (generalmente el email)
+- **Password**: Tu contraseña de Odoo
+- **Location ID**: El ID de la bodega/ubicación (en este caso: 28)
+
+#### Obtener Access Token de Shopify
 
 1. Ve a tu panel de administración de Shopify
 2. Navega a **Settings > Apps and sales channels > Develop apps**
@@ -83,7 +113,24 @@ LOG_LEVEL=INFO
 
 ## Uso
 
-### Iniciar el servidor
+### Opción 1: CLI (Línea de Comandos)
+
+La forma más simple de sincronizar:
+
+```bash
+# Probar conexiones con Odoo y Shopify
+python -m odoo_shopify_connector.cli test
+
+# Sincronizar inventario
+python -m odoo_shopify_connector.cli sync
+
+# Sincronizar con detalles de cada producto
+python -m odoo_shopify_connector.cli sync --verbose
+```
+
+### Opción 2: API REST
+
+Iniciar el servidor:
 
 ```bash
 python -m odoo_shopify_connector.main
@@ -95,281 +142,267 @@ O con uvicorn directamente:
 uvicorn odoo_shopify_connector.api:app --host 0.0.0.0 --port 8000
 ```
 
-El servidor estará disponible en `http://localhost:8000`
+#### Endpoints disponibles:
 
-### Verificar que está funcionando
+**GET /**
+```bash
+curl http://localhost:8000/
+```
+Información del servicio.
 
+**GET /health**
 ```bash
 curl http://localhost:8000/health
 ```
+Health check.
 
-Respuesta esperada:
-```json
-{
-  "status": "healthy"
-}
+**GET /test-connections**
+```bash
+curl http://localhost:8000/test-connections
 ```
+Prueba las conexiones con Odoo y Shopify.
+
+**POST /sync**
+```bash
+curl -X POST http://localhost:8000/sync
+```
+Sincroniza todo el inventario (puede tardar dependiendo del número de productos).
+
+**POST /sync/async**
+```bash
+curl -X POST http://localhost:8000/sync/async
+```
+Inicia la sincronización en segundo plano (retorna inmediatamente).
 
 ### Documentación de la API
 
-FastAPI genera documentación automática. Accede a:
+FastAPI genera documentación automática:
 
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 
-## Configuración de Odoo
+## Funcionamiento Interno
 
-Para que Odoo envíe webhooks cuando el stock cambia, necesitas configurar una **Acción Automatizada**.
+### Lectura de Inventario de Odoo
 
-### Crear Acción Automatizada en Odoo
-
-1. Ve a **Ajustes > Técnico > Automatización > Acciones Automatizadas**
-2. Crea una nueva acción con los siguientes parámetros:
-
-**Configuración básica:**
-- **Nombre**: Sincronizar Stock con Shopify
-- **Modelo**: Stock Quant (`stock.quant`)
-- **Disparador**: On Update (Al Actualizar)
-- **Filtro de Dominio**: `[('product_id.default_code', '!=', False)]` (solo productos con SKU)
-
-**Acción a ejecutar:**
-- **Tipo de Acción**: Execute Python Code
-
-**Código Python:**
+El conector usa XML-RPC para consultar el modelo `stock.quant` de Odoo:
 
 ```python
-import requests
-import json
-
-# URL del conector (ajusta según tu configuración)
-CONNECTOR_URL = "http://tu-servidor:8000/webhook/odoo/stock"
-
-for record in records:
-    # Solo procesar si el producto tiene SKU (default_code en Odoo)
-    if record.product_id.default_code:
-        payload = {
-            "product_reference_code": record.product_id.default_code,
-            "available_quantity": int(record.quantity),
-            "location_id": record.location_id.id
-        }
-
-        try:
-            response = requests.post(
-                CONNECTOR_URL,
-                json=payload,
-                timeout=10
-            )
-
-            if response.status_code != 200:
-                raise UserError(f"Error al sincronizar con Shopify: {response.text}")
-
-        except Exception as e:
-            # Log del error (no bloquear la operación en Odoo)
-            import logging
-            _logger = logging.getLogger(__name__)
-            _logger.error(f"Error al enviar webhook a Shopify: {str(e)}")
+# Dominio de búsqueda
+domain = [
+    ('location_id', '=', 28),          # Ubicación específica
+    ('quantity', '>', 0),               # Solo productos con stock
+    ('product_id.default_code', '!=', False)  # Solo productos con SKU
+]
 ```
 
-### Formato del Webhook
+### Sincronización con Shopify
 
-El webhook de Odoo debe enviar un JSON con el siguiente formato:
+Para cada producto de Odoo:
 
-```json
-{
-  "product_reference_code": "PROD-SKU-001",
-  "available_quantity": 25,
-  "location_id": 8
-}
-```
+1. **Busca por SKU** en Shopify usando GraphQL
+2. **Obtiene stock actual** de la variante en Shopify
+3. **Calcula delta** = cantidad_odoo - cantidad_shopify
+4. **Ajusta inventario** con la mutación `inventoryAdjustQuantities`
 
-**Campos:**
-- `product_reference_code` (requerido): SKU del producto (debe coincidir exactamente con el SKU en Shopify)
-- `available_quantity` (requerido): Cantidad total disponible (≥ 0)
-- `location_id` (opcional): ID de ubicación en Odoo (solo para logging)
+### Mapeo de Datos
 
-## Arquitectura Técnica
-
-### Componentes
-
-1. **`models.py`**: Modelos Pydantic para validación de datos
-2. **`config.py`**: Gestión de configuración y variables de entorno
-3. **`shopify_service.py`**: Servicio que encapsula la lógica de Shopify GraphQL
-4. **`api.py`**: API FastAPI con el endpoint del webhook
-5. **`main.py`**: Punto de entrada de la aplicación
-
-### Modelo de Consistencia
-
-Este conector implementa un modelo de **consistencia eventual**:
-
-- **Sin colas**: Los webhooks se procesan sincrónicamente
-- **Sin reintentos**: Si falla una actualización, se espera al siguiente cambio de stock
-- **Sin transacciones**: No hay garantías ACID entre Odoo y Shopify
-
-### Riesgos Aceptados
-
-⚠️ **Importante**: Este diseño prioriza simplicidad sobre robustez:
-
-1. **Webhook Prematuro**: El webhook podría dispararse antes del commit de la transacción en Odoo
-2. **Webhook Perdido**: Si Shopify está caído, la actualización se pierde
-3. **Dependencia de SKU**: El SKU debe estar perfectamente sincronizado entre sistemas
+| Campo en Odoo | Campo en Shopify |
+|---------------|------------------|
+| `product_id.default_code` (SKU) | `variant.sku` |
+| `quantity` | `inventoryLevel.quantities.available` |
+| `location_id` | - (no se mapea, Shopify usa su propia ubicación) |
 
 ## Respuestas de la API
 
-### Éxito (200 OK)
+### Sincronización Exitosa
 
 ```json
 {
-  "success": true,
-  "message": "Stock sincronizado exitosamente para SKU 'PROD-001'",
-  "sku": "PROD-001",
-  "quantity_updated": 25,
-  "delta": 5
-}
-```
-
-### Error - Producto no encontrado (500)
-
-```json
-{
-  "success": false,
-  "message": "Producto con SKU 'PROD-999' no encontrado en Shopify"
-}
-```
-
-### Error - Payload inválido (400)
-
-```json
-{
-  "detail": [
+  "total_products": 15,
+  "successful": 14,
+  "failed": 1,
+  "skipped": 0,
+  "results": [
     {
-      "loc": ["body", "product_reference_code"],
-      "msg": "field required",
-      "type": "value_error.missing"
-    }
+      "success": true,
+      "message": "Stock sincronizado exitosamente para SKU 'PROD-001'",
+      "sku": "PROD-001",
+      "quantity_updated": 25,
+      "delta": 5
+    },
+    ...
   ]
 }
 ```
 
-### Error - Shopify GraphQL (500)
+### Test de Conexiones
 
 ```json
 {
-  "success": false,
-  "message": "Error al comunicar con Shopify: GraphQL errors: ..."
+  "odoo": {
+    "status": "OK",
+    "message": "Conexión exitosa. UID: 2"
+  },
+  "shopify": {
+    "status": "OK",
+    "message": "Conexión exitosa. Location: gid://shopify/Location/12345"
+  },
+  "overall": "OK"
 }
 ```
 
-## Testing
+## Programar Sincronización Periódica
 
-### Test manual con curl
+### Con cron (Linux)
 
-```bash
-curl -X POST http://localhost:8000/webhook/odoo/stock \
-  -H "Content-Type: application/json" \
-  -d '{
-    "product_reference_code": "TU-SKU-AQUI",
-    "available_quantity": 10
-  }'
-```
-
-### Script de test de Python existente
-
-El repositorio incluye un script de test en `tests/odoo_shopify_stock.py` para probar la comunicación con Shopify directamente.
-
-## Despliegue en Producción
-
-### Consideraciones
-
-1. **HTTPS**: El conector debe estar detrás de un proxy inverso (nginx, Traefik) con HTTPS
-2. **Firewall**: Asegúrate de que Odoo pueda alcanzar el conector
-3. **Logging**: Configura rotación de logs
-4. **Monitoring**: Implementa health checks y alertas
-5. **Seguridad**: Considera agregar autenticación al webhook
-
-### Ejemplo con Docker
-
-```dockerfile
-FROM python:3.13-slim
-
-WORKDIR /app
-COPY . /app
-
-RUN pip install -e .
-
-CMD ["python", "-m", "odoo_shopify_connector.main"]
-```
+Edita el crontab:
 
 ```bash
-docker build -t odoo-shopify-connector .
-docker run -d \
-  -p 8000:8000 \
-  --env-file .env \
-  --name connector \
-  odoo-shopify-connector
+crontab -e
 ```
 
-### Ejemplo con systemd
+Agrega una línea para sincronizar cada hora:
 
-Crea `/etc/systemd/system/odoo-shopify-connector.service`:
+```cron
+0 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
+```
+
+### Con systemd timer (Linux)
+
+Crea `/etc/systemd/system/odoo-shopify-sync.service`:
 
 ```ini
 [Unit]
-Description=Odoo-Shopify Stock Connector
-After=network.target
+Description=Sincronización Odoo-Shopify
 
 [Service]
-Type=simple
+Type=oneshot
 User=www-data
 WorkingDirectory=/opt/odoo-shopify-connector
 Environment="PATH=/opt/odoo-shopify-connector/venv/bin"
 EnvironmentFile=/opt/odoo-shopify-connector/.env
-ExecStart=/opt/odoo-shopify-connector/venv/bin/python -m odoo_shopify_connector.main
-Restart=always
+ExecStart=/opt/odoo-shopify-connector/venv/bin/python -m odoo_shopify_connector.cli sync
+```
+
+Crea `/etc/systemd/system/odoo-shopify-sync.timer`:
+
+```ini
+[Unit]
+Description=Sincronización Odoo-Shopify cada hora
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=timers.target
 ```
+
+Activa el timer:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable odoo-shopify-connector
-sudo systemctl start odoo-shopify-connector
+sudo systemctl enable odoo-shopify-sync.timer
+sudo systemctl start odoo-shopify-sync.timer
 ```
+
+### Con Task Scheduler (Windows)
+
+1. Abre Task Scheduler
+2. Crea una nueva tarea básica
+3. Configura el trigger (ej: cada hora)
+4. Acción: "Iniciar un programa"
+5. Programa: `C:\ruta\al\venv\Scripts\python.exe`
+6. Argumentos: `-m odoo_shopify_connector.cli sync`
+7. Directorio: `C:\ruta\al\proyecto`
+
+## Despliegue con Docker
+
+### Dockerfile
+
+```bash
+docker build -t odoo-shopify-connector .
+```
+
+### Docker Compose
+
+```bash
+docker-compose up -d
+```
+
+El contenedor incluye health checks automáticos.
 
 ## Troubleshooting
 
-### El webhook no llega al conector
+### Error: "Autenticación fallida con Odoo"
 
-1. Verifica que el conector esté corriendo: `curl http://localhost:8000/health`
-2. Revisa los logs de Odoo para ver si hay errores al enviar el webhook
-3. Verifica que la URL en la Acción Automatizada sea correcta
-4. Asegúrate de que no haya firewall bloqueando la conexión
+**Causas:**
+- Credenciales incorrectas
+- Nombre de base de datos incorrecto
+- Usuario no tiene permisos
 
-### "Producto no encontrado en Shopify"
+**Solución:**
+1. Verifica `ODOO_URL`, `ODOO_DATABASE`, `ODOO_USERNAME`, `ODOO_PASSWORD` en `.env`
+2. Prueba conectarte manualmente a Odoo con esas credenciales
+3. Verifica que el usuario tenga permisos para leer `stock.quant` y `product.product`
 
-1. Verifica que el SKU en Odoo coincida EXACTAMENTE con el SKU en Shopify
-2. Revisa en Shopify Admin que el producto tenga SKU configurado
-3. Prueba buscar el producto manualmente en Shopify con el SKU
+### Error: "No se encontraron productos en ubicación 28"
 
-### "Error al comunicar con Shopify"
+**Causas:**
+- La ubicación 28 no existe
+- La ubicación está vacía
+- Los productos no tienen SKU
 
-1. Verifica que `SHOPIFY_STORE_URL` y `SHOPIFY_ACCESS_TOKEN` sean correctos
-2. Verifica que el token tenga los permisos necesarios
-3. Revisa los logs del conector para más detalles
+**Solución:**
+1. Verifica en Odoo que la ubicación 28 existe
+2. Consulta qué ubicaciones tienes: En Odoo > Inventario > Configuración > Ubicaciones
+3. Actualiza `ODOO_LOCATION_ID` en `.env` si es necesario
+4. Asegúrate de que los productos tengan el campo "Referencia interna" (SKU) lleno
+
+### Error: "Producto con SKU 'XXX' no encontrado en Shopify"
+
+**Causas:**
+- El SKU en Odoo no coincide con Shopify
+- El producto no existe en Shopify
+
+**Solución:**
+1. Verifica que el SKU en Odoo sea EXACTAMENTE igual al SKU en Shopify
+2. Los SKU son case-sensitive
+3. Revisa en Shopify Admin que el producto tenga el SKU configurado
+
+### El stock no se actualiza correctamente
+
+**Causas:**
+- Diferencia de unidades (Odoo en kg, Shopify en unidades)
+- Múltiples ubicaciones en Shopify
+
+**Solución:**
+1. Verifica que las unidades de medida sean consistentes
+2. El conector usa la primera ubicación de Shopify
+3. Revisa los logs para ver qué delta se está aplicando
 
 ## Logs
 
-Los logs incluyen información detallada sobre cada sincronización:
+Los logs incluyen información detallada:
 
 ```
-2025-01-13 10:30:45 - odoo_shopify_connector.api - INFO - Webhook recibido de Odoo - SKU: PROD-001, Cantidad: 25
-2025-01-13 10:30:45 - odoo_shopify_connector.shopify_service - INFO - Iniciando sincronización de stock para SKU: PROD-001, cantidad: 25
-2025-01-13 10:30:45 - odoo_shopify_connector.shopify_service - INFO - Ubicación obtenida: Mi Tienda (ID: gid://shopify/Location/123)
-2025-01-13 10:30:46 - odoo_shopify_connector.shopify_service - INFO - Variante encontrada - ID: gid://shopify/ProductVariant/456
-2025-01-13 10:30:46 - odoo_shopify_connector.shopify_service - INFO - Stock actual en Shopify para SKU PROD-001: 20
-2025-01-13 10:30:46 - odoo_shopify_connector.shopify_service - INFO - Ajustando inventario: 20 -> 25 (delta: 5)
-2025-01-13 10:30:46 - odoo_shopify_connector.shopify_service - INFO - Inventario ajustado exitosamente
+2025-01-13 10:30:45 - INFO - Autenticando con Odoo: https://odoo.empresa.com, DB: produccion
+2025-01-13 10:30:45 - INFO - Autenticación exitosa. UID: 2
+2025-01-13 10:30:45 - INFO - Obteniendo inventario de ubicación 28
+2025-01-13 10:30:46 - INFO - Se encontraron 15 registros de stock en ubicación 28
+2025-01-13 10:30:46 - INFO - Sincronizando producto: SKU=PROD-001, Cantidad=25.0
+2025-01-13 10:30:47 - INFO - Stock actual en Shopify para SKU PROD-001: 20
+2025-01-13 10:30:47 - INFO - Ajustando inventario: 20 -> 25 (delta: 5)
+2025-01-13 10:30:47 - INFO - Inventario ajustado exitosamente
 ```
+
+## Limitaciones Conocidas
+
+1. **Solo sincroniza una ubicación**: El conector está configurado para ubicación 28
+2. **Solo productos con SKU**: Los productos sin SKU se omiten
+3. **Sincronización manual/programada**: No es en tiempo real
+4. **Una ubicación en Shopify**: Usa la primera ubicación disponible
 
 ## Contribuir
 
