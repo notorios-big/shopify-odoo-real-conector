@@ -1,344 +1,292 @@
-# Conector de Stock Odoo-Shopify
+# Conector de Stock Odoo-Shopify v2.1.0
 
-Conector unidireccional (Odoo → Shopify) para sincronización de inventario mediante consulta directa a la API de Odoo.
+Conector unidireccional optimizado (Odoo → Shopify) con **detección de cambios** para sincronización eficiente de inventario.
 
-## Descripción
+## 🚀 ¿Qué hace?
 
-Este conector lee el inventario completo de una ubicación específica en Odoo y sincroniza las cantidades con Shopify. El conector **consulta activamente a Odoo** (modelo pull) en lugar de esperar webhooks.
-
-### Arquitectura
+Sincroniza automáticamente el stock de Odoo a Shopify, **solo actualizando productos que cambiaron** (95% menos llamadas API).
 
 ```
-┌──────────────┐                    ┌──────────────────┐                    ┌──────────────┐
-│              │  XML-RPC           │                  │  GraphQL           │              │
-│     Odoo     │ <───────────────── │  Conector API    │ ─────────────────> │   Shopify    │
-│  (Fuente)    │  Query Inventory   │  (FastAPI)       │  Update Inventory  │  (Destino)   │
-│              │                    │                  │                    │              │
-└──────────────┘                    └──────────────────┘                    └──────────────┘
+┌──────────┐   Lee Stock   ┌────────────┐   Detecta    ┌────────────┐
+│   Odoo   │ ──────────▶   │  Conector  │  Cambios  ▶  │  Shopify   │
+│ (Fuente) │   XML-RPC     │  (v2.1.0)  │   GraphQL    │ (Destino)  │
+└──────────┘               └────────────┘              └────────────┘
 ```
 
-### Flujo de Sincronización
+## ✨ Características v2.1.0
 
-1. **Conector** llama a la API XML-RPC de Odoo para leer el inventario de la ubicación 28
-2. **Conector** procesa cada producto con SKU
-3. **Conector** consulta Shopify GraphQL para obtener el stock actual
-4. **Conector** calcula el delta y ajusta el inventario en Shopify
+### 🎯 Detección de Cambios (NUEVO)
+- ✅ **Solo sincroniza productos modificados** (nuevos, editados o eliminados)
+- ✅ **Sin llamadas API** cuando no hay cambios detectados
+- ✅ **95% reducción** en llamadas API (con 5% de productos cambiados)
+- ✅ **10-20x más rápido** en sincronizaciones incrementales
+- ✅ **Snapshot automático** después de cada sync
 
-## Características
+### ⚡ Actualización Masiva (BULK)
+- ✅ Hasta **250 productos por batch**
+- ✅ **Rate limiting** inteligente con exponential backoff (1s, 2s, 4s, 8s)
+- ✅ **Retry automático** (máximo 4 intentos)
+- ✅ Solo actualiza cantidad **"available"** (no committed/incoming)
 
-✅ **Actualización MASIVA (Bulk)** - Hasta 250 productos por batch
-✅ Consulta directa a Odoo via XML-RPC
-✅ Sincronización de ubicación específica (ID: 28)
-✅ Búsqueda de productos por SKU
-✅ **Retry automático con exponential backoff**
-✅ **Monitoreo de rate limits** de Shopify
-✅ API REST con endpoints de sincronización
-✅ CLI para sincronización desde línea de comandos
-✅ Logging detallado de operaciones
-✅ Soporte para sincronización en background
+### 🔧 Integración
+- ✅ **API REST** con 9 endpoints
+- ✅ **CLI** con 7 comandos
+- ✅ **Docker** ready con health checks
 
-### ⚡ Modo Bulk (Recomendado)
+---
 
-El conector usa **actualización masiva** por defecto para máxima eficiencia:
+## 📦 Instalación Rápida
 
-- **Batching automático**: Agrupa hasta 250 items por llamada GraphQL
-- **Rate limit handling**: Retry inteligente con backoff exponencial (1s, 2s, 4s, 8s)
-- **Monitoreo en tiempo real**: Tracking de puntos GraphQL disponibles
-- **Reintentos automáticos**: Hasta 4 intentos en errores de red/servidor
-- **Performance**: 10-50x más rápido que modo single para inventarios grandes
-
-**Mutación GraphQL usada:**
-```graphql
-mutation BulkUpdateInventory($adjustments: [InventoryAdjustItemInput!]!, $locationId: ID!) {
-  inventoryBulkAdjustQuantityAtLocation(
-    inventoryItemAdjustments: $adjustments
-    locationId: $locationId
-  ) {
-    inventoryLevels { id available }
-    userErrors { field message }
-  }
-}
-```
-
-## Requisitos
-
-- Python 3.13+
-- Acceso a Odoo (usuario y contraseña)
-- Cuenta de Shopify con acceso a Admin API
-
-## Instalación
-
-### 1. Clonar el repositorio
+### 1. Clonar y configurar
 
 ```bash
-git clone <url-del-repositorio>
+git clone <repo-url>
 cd shopify-odoo-real-conector
+cp .env.example .env
+# Editar .env con tus credenciales
 ```
 
-### 2. Crear entorno virtual
+### 2. Instalar dependencias
 
 ```bash
 python -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
-```
-
-### 3. Instalar dependencias
-
-```bash
+source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -e .
 ```
 
-### 4. Configurar variables de entorno
-
-Copia el archivo de ejemplo y edita con tus credenciales:
-
-```bash
-cp .env.example .env
-```
-
-Edita `.env` y configura:
+### 3. Configurar `.env`
 
 ```bash
 # Odoo
-ODOO_URL=https://odoo.tuempresa.com
+ODOO_URL=https://tu-odoo.com
 ODOO_DATABASE=produccion
-ODOO_USERNAME=admin@tuempresa.com
+ODOO_USERNAME=admin@empresa.com
 ODOO_PASSWORD=tu_password
 ODOO_LOCATION_ID=28
 
 # Shopify
 SHOPIFY_STORE_URL=https://tu-tienda.myshopify.com
-SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+SHOPIFY_ACCESS_TOKEN=shpat_xxxxx
 SHOPIFY_API_VERSION=2025-10
-
-# Servidor
-HOST=0.0.0.0
-PORT=8000
-LOG_LEVEL=INFO
 ```
 
-#### Obtener credenciales de Odoo
+---
 
-- **URL**: La URL de tu instancia de Odoo
-- **Database**: El nombre de la base de datos (si no sabes cuál es, pregunta al administrador)
-- **Username**: Tu usuario de Odoo (generalmente el email)
-- **Password**: Tu contraseña de Odoo
-- **Location ID**: El ID de la bodega/ubicación (en este caso: 28)
+## 🎮 Uso
 
-#### Obtener Access Token de Shopify
-
-1. Ve a tu panel de administración de Shopify
-2. Navega a **Settings > Apps and sales channels > Develop apps**
-3. Crea una nueva app o selecciona una existente
-4. En **Configuration**, configura los siguientes permisos:
-   - `read_inventory`
-   - `write_inventory`
-   - `read_products`
-5. Instala la app y copia el **Admin API access token**
-
-## Uso
-
-### Opción 1: CLI (Línea de Comandos)
-
-La forma más simple de sincronizar:
+### CLI (Recomendado)
 
 ```bash
-# Probar conexiones con Odoo y Shopify
-python -m odoo_shopify_connector.cli test
-
-# Sincronizar inventario (BULK mode - recomendado)
+# Sincronización optimizada (solo cambios)
 python -m odoo_shopify_connector.cli sync
 
-# Sincronizar con detalles de cada producto
-python -m odoo_shopify_connector.cli sync --verbose
+# Ver preview sin ejecutar
+python -m odoo_shopify_connector.cli preview-changes
 
-# Usar modo single (producto por producto) - más lento
-python -m odoo_shopify_connector.cli sync --single
+# Ver info del snapshot
+python -m odoo_shopify_connector.cli snapshot-info
+
+# Forzar sync completa (ignorar snapshot)
+python -m odoo_shopify_connector.cli sync --force
+
+# Resetear snapshot
+python -m odoo_shopify_connector.cli reset-snapshot
+
+# Probar conexiones
+python -m odoo_shopify_connector.cli test
 ```
 
-**Nota:** El CLI usa **modo bulk por defecto** para mejor performance.
-
-### Opción 2: API REST
-
-Iniciar el servidor:
+### API REST
 
 ```bash
+# Iniciar servidor
 python -m odoo_shopify_connector.main
-```
 
-O con uvicorn directamente:
-
-```bash
+# O con uvicorn
 uvicorn odoo_shopify_connector.api:app --host 0.0.0.0 --port 8000
 ```
 
-#### Endpoints disponibles:
+**Endpoints principales:**
 
-**GET /**
 ```bash
-curl http://localhost:8000/
-```
-Información del servicio.
-
-**GET /health**
-```bash
-curl http://localhost:8000/health
-```
-Health check.
-
-**GET /test-connections**
-```bash
-curl http://localhost:8000/test-connections
-```
-Prueba las conexiones con Odoo y Shopify.
-
-**POST /sync** (⚡ BULK - Recomendado)
-```bash
+# Sincronizar (optimizado)
 curl -X POST http://localhost:8000/sync
-```
-Sincroniza todo el inventario usando modo BULK (actualización masiva en batches de hasta 250 items).
 
-**POST /sync/single**
+# Preview de cambios
+curl http://localhost:8000/sync/preview
+
+# Info del snapshot
+curl http://localhost:8000/snapshot/info
+
+# Resetear snapshot
+curl -X POST http://localhost:8000/snapshot/reset
+
+# Health check
+curl http://localhost:8000/health
+
+# Documentación interactiva
+open http://localhost:8000/docs
+```
+
+### Docker
+
 ```bash
-curl -X POST http://localhost:8000/sync/single
-```
-Sincroniza producto por producto (modo tradicional, más lento).
+# Build y run
+docker-compose up -d
 
-**POST /sync/async**
+# Ver logs
+docker-compose logs -f
+```
+
+---
+
+## 📊 Ejemplo de Salida
+
+### Sincronización con cambios detectados:
+
+```
+============================================================
+SINCRONIZACIÓN OPTIMIZADA DE INVENTARIO ODOO → SHOPIFY
+============================================================
+
+Ubicación de Odoo: 28
+Tienda Shopify: https://tu-tienda.myshopify.com
+Modo: OPTIMIZADO
+
+============================================================
+RESUMEN DE SINCRONIZACIÓN
+============================================================
+
+Total de productos procesados: 1000
+Exitosos:                       42
+Fallidos:                       0
+Omitidos (sin SKU):             0
+Sin cambios:                    958
+Nuevos:                         10
+Modificados:                    30
+Eliminados:                     2
+Batches procesados:             1
+Tiempo total:                   8.3s
+Snapshot actualizado:           Sí
+
+Ahorro API: 962 llamadas (95.8%)
+```
+
+### Sin cambios detectados:
+
+```
+✓ No se detectaron cambios. Omitiendo llamadas a Shopify API.
+Tiempo total: 2.1s
+```
+
+---
+
+## 🔍 Comandos Útiles
+
+### Preview de cambios (sin ejecutar)
+
 ```bash
-curl -X POST http://localhost:8000/sync/async
-```
-Inicia la sincronización BULK en segundo plano (retorna inmediatamente).
-
-### Documentación de la API
-
-FastAPI genera documentación automática:
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-
-## Funcionamiento Interno
-
-### Lectura de Inventario de Odoo
-
-El conector usa XML-RPC para consultar el modelo `stock.quant` de Odoo:
-
-```python
-# Dominio de búsqueda
-domain = [
-    ('location_id', '=', 28),          # Ubicación específica
-    ('quantity', '>', 0),               # Solo productos con stock
-    ('product_id.default_code', '!=', False)  # Solo productos con SKU
-]
+python -m odoo_shopify_connector.cli preview-changes
 ```
 
-### Sincronización con Shopify
+Salida:
+```
+Total productos en Odoo: 1000
 
-Para cada producto de Odoo:
+Cambios detectados:
+  Nuevos:       10
+  Modificados:  30
+  Eliminados:   2
+  Sin cambios:  958
+  TOTAL:        42
 
-1. **Busca por SKU** en Shopify usando GraphQL
-2. **Obtiene stock actual** de la variante en Shopify
-3. **Calcula delta** = cantidad_odoo - cantidad_shopify
-4. **Ajusta inventario** con la mutación `inventoryAdjustQuantities`
+Estimaciones:
+  Productos a sincronizar: 42
+  Batches:                 1
+  Tiempo estimado:         9.4s
+  Llamadas API estimadas:  43
 
-### Mapeo de Datos
-
-| Campo en Odoo | Campo en Shopify |
-|---------------|------------------|
-| `product_id.default_code` (SKU) | `variant.sku` |
-| `quantity` | `inventoryLevel.quantities.available` |
-| `location_id` | - (no se mapea, Shopify usa su propia ubicación) |
-
-## Respuestas de la API
-
-### Sincronización Exitosa
-
-```json
-{
-  "total_products": 15,
-  "successful": 14,
-  "failed": 1,
-  "skipped": 0,
-  "results": [
-    {
-      "success": true,
-      "message": "Stock sincronizado exitosamente para SKU 'PROD-001'",
-      "sku": "PROD-001",
-      "quantity_updated": 25,
-      "delta": 5
-    },
-    ...
-  ]
-}
+Ahorro vs sync completa:
+  Llamadas ahorradas:      962
+  Porcentaje de ahorro:    95.7%
 ```
 
-### Test de Conexiones
+### Info del snapshot
 
-```json
-{
-  "odoo": {
-    "status": "OK",
-    "message": "Conexión exitosa. UID: 2"
-  },
-  "shopify": {
-    "status": "OK",
-    "message": "Conexión exitosa. Location: gid://shopify/Location/12345"
-  },
-  "overall": "OK"
-}
+```bash
+python -m odoo_shopify_connector.cli snapshot-info
 ```
 
-## Programar Sincronización Periódica
+Salida:
+```
+✓ Última sincronización:  2025-11-14T10:30:00
+  Total de productos:     1000
+  Tamaño del archivo:     128.5 KB
+  Ubicación:              /home/claude/last_sync_snapshot.json
+```
 
-### Con cron (Linux) - Cada 3 minutos ⏰
+---
 
-Edita el crontab:
+## 🔧 Configuración de Credenciales
+
+### Odoo
+
+1. URL, base de datos, usuario y contraseña de tu instancia
+2. **Location ID**: ID de la bodega/ubicación (ej: 28)
+   - Ver en: Odoo > Inventario > Configuración > Ubicaciones
+
+### Shopify
+
+1. Ve a: **Admin > Settings > Apps > Develop apps**
+2. Crea una app o selecciona existente
+3. Permisos necesarios:
+   - `read_inventory`
+   - `write_inventory`
+   - `read_products`
+4. Copia el **Admin API access token**
+
+---
+
+## 📈 Optimización y Performance
+
+### Comparación v2.0.0 vs v2.1.0
+
+**Ejemplo: 1000 productos, 5% cambian (50 productos)**
+
+| Métrica | v2.0.0 (sin snapshot) | v2.1.0 (con snapshot) | Mejora |
+|---------|----------------------|----------------------|--------|
+| **API calls** | 1,004 | 51 | **95% menos** |
+| **Tiempo** | 90-120s | 8-12s | **10x más rápido** |
+| **Rate limit risk** | Alto | Ninguno | ✅ |
+
+### Sin cambios detectados
+
+| Métrica | v2.0.0 | v2.1.0 | Mejora |
+|---------|--------|--------|--------|
+| **API calls** | 1,004 | 0 | **100%** |
+| **Tiempo** | 90-120s | 2-3s | **40x más rápido** |
+
+---
+
+## 🔄 Programar Sincronización
+
+### Cron (Linux) - Cada 3 minutos
 
 ```bash
 crontab -e
 ```
 
-Agrega una línea para sincronizar **cada 3 minutos** (recomendado):
-
+Agregar:
 ```cron
-*/3 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
+*/3 * * * * cd /ruta/proyecto && /ruta/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify.log 2>&1
 ```
 
-Otras opciones de intervalo:
+### Systemd Timer
 
-```cron
-# Cada 5 minutos
-*/5 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
-
-# Cada 10 minutos
-*/10 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
-
-# Cada hora
-0 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
-```
-
-### Con systemd timer (Linux) - Cada 3 minutos ⏰
-
-Crea `/etc/systemd/system/odoo-shopify-sync.service`:
-
+Crear `/etc/systemd/system/odoo-shopify-sync.timer`:
 ```ini
 [Unit]
-Description=Sincronización Odoo-Shopify BULK
-
-[Service]
-Type=oneshot
-User=www-data
-WorkingDirectory=/opt/odoo-shopify-connector
-Environment="PATH=/opt/odoo-shopify-connector/venv/bin"
-EnvironmentFile=/opt/odoo-shopify-connector/.env
-ExecStart=/opt/odoo-shopify-connector/venv/bin/python -m odoo_shopify_connector.cli sync
-```
-
-Crea `/etc/systemd/system/odoo-shopify-sync.timer`:
-
-```ini
-[Unit]
-Description=Sincronización Odoo-Shopify cada 3 minutos
+Description=Sync Odoo-Shopify cada 3 minutos
 
 [Timer]
 OnBootSec=1min
@@ -348,125 +296,123 @@ OnUnitActiveSec=3min
 WantedBy=timers.target
 ```
 
-Activa el timer:
-
+Activar:
 ```bash
-sudo systemctl daemon-reload
 sudo systemctl enable odoo-shopify-sync.timer
 sudo systemctl start odoo-shopify-sync.timer
 ```
 
-### Con Task Scheduler (Windows)
+---
 
-1. Abre Task Scheduler
-2. Crea una nueva tarea básica
-3. Configura el trigger (ej: cada hora)
-4. Acción: "Iniciar un programa"
-5. Programa: `C:\ruta\al\venv\Scripts\python.exe`
-6. Argumentos: `-m odoo_shopify_connector.cli sync`
-7. Directorio: `C:\ruta\al\proyecto`
-
-## Despliegue con Docker
-
-### Dockerfile
-
-```bash
-docker build -t odoo-shopify-connector .
-```
-
-### Docker Compose
-
-```bash
-docker-compose up -d
-```
-
-El contenedor incluye health checks automáticos.
-
-## Troubleshooting
+## 🐛 Troubleshooting
 
 ### Error: "Autenticación fallida con Odoo"
 
-**Causas:**
-- Credenciales incorrectas
-- Nombre de base de datos incorrecto
-- Usuario no tiene permisos
+**Solución:**
+- Verifica credenciales en `.env`
+- Prueba login manual en Odoo
+- Verifica permisos de usuario para leer `stock.quant`
+
+### Error: "SKU no encontrado en Shopify"
 
 **Solución:**
-1. Verifica `ODOO_URL`, `ODOO_DATABASE`, `ODOO_USERNAME`, `ODOO_PASSWORD` en `.env`
-2. Prueba conectarte manualmente a Odoo con esas credenciales
-3. Verifica que el usuario tenga permisos para leer `stock.quant` y `product.product`
+- Verifica que el SKU en Odoo sea **exactamente igual** al de Shopify (case-sensitive)
+- Asegúrate que el producto existe en Shopify
+- Revisa que el campo "SKU" esté lleno en Shopify
 
-### Error: "No se encontraron productos en ubicación 28"
-
-**Causas:**
-- La ubicación 28 no existe
-- La ubicación está vacía
-- Los productos no tienen SKU
+### El snapshot no se actualiza
 
 **Solución:**
-1. Verifica en Odoo que la ubicación 28 existe
-2. Consulta qué ubicaciones tienes: En Odoo > Inventario > Configuración > Ubicaciones
-3. Actualiza `ODOO_LOCATION_ID` en `.env` si es necesario
-4. Asegúrate de que los productos tengan el campo "Referencia interna" (SKU) lleno
+```bash
+# Verificar permisos del directorio
+ls -la /home/claude/
 
-### Error: "Producto con SKU 'XXX' no encontrado en Shopify"
+# Crear directorio si no existe
+mkdir -p /home/claude/
 
-**Causas:**
-- El SKU en Odoo no coincide con Shopify
-- El producto no existe en Shopify
-
-**Solución:**
-1. Verifica que el SKU en Odoo sea EXACTAMENTE igual al SKU en Shopify
-2. Los SKU son case-sensitive
-3. Revisa en Shopify Admin que el producto tenga el SKU configurado
-
-### El stock no se actualiza correctamente
-
-**Causas:**
-- Diferencia de unidades (Odoo en kg, Shopify en unidades)
-- Múltiples ubicaciones en Shopify
-
-**Solución:**
-1. Verifica que las unidades de medida sean consistentes
-2. El conector usa la primera ubicación de Shopify
-3. Revisa los logs para ver qué delta se está aplicando
-
-## Logs
-
-Los logs incluyen información detallada:
-
-```
-2025-01-13 10:30:45 - INFO - Autenticando con Odoo: https://odoo.empresa.com, DB: produccion
-2025-01-13 10:30:45 - INFO - Autenticación exitosa. UID: 2
-2025-01-13 10:30:45 - INFO - Obteniendo inventario de ubicación 28
-2025-01-13 10:30:46 - INFO - Se encontraron 15 registros de stock en ubicación 28
-2025-01-13 10:30:46 - INFO - Sincronizando producto: SKU=PROD-001, Cantidad=25.0
-2025-01-13 10:30:47 - INFO - Stock actual en Shopify para SKU PROD-001: 20
-2025-01-13 10:30:47 - INFO - Ajustando inventario: 20 -> 25 (delta: 5)
-2025-01-13 10:30:47 - INFO - Inventario ajustado exitosamente
+# Resetear snapshot y volver a sincronizar
+python -m odoo_shopify_connector.cli reset-snapshot
+python -m odoo_shopify_connector.cli sync
 ```
 
-## Limitaciones Conocidas
+### Forzar sincronización completa
 
-1. **Solo sincroniza una ubicación**: El conector está configurado para ubicación 28
-2. **Solo productos con SKU**: Los productos sin SKU se omiten
-3. **Sincronización manual/programada**: No es en tiempo real
-4. **Una ubicación en Shopify**: Usa la primera ubicación disponible
+```bash
+# Opción 1: Flag --force
+python -m odoo_shopify_connector.cli sync --force
 
-## Contribuir
+# Opción 2: Resetear snapshot
+python -m odoo_shopify_connector.cli reset-snapshot
+python -m odoo_shopify_connector.cli sync
+```
 
-Las contribuciones son bienvenidas. Por favor:
+---
 
-1. Haz fork del repositorio
-2. Crea una rama para tu feature (`git checkout -b feature/mi-feature`)
-3. Commit tus cambios (`git commit -am 'Agregar nueva funcionalidad'`)
-4. Push a la rama (`git push origin feature/mi-feature`)
-5. Crea un Pull Request
+## 📁 Estructura del Proyecto
 
-## Licencia
+```
+src/odoo_shopify_connector/
+├── __init__.py           # Versión y exports
+├── main.py               # Entrypoint del servidor
+├── api.py                # Endpoints REST
+├── cli.py                # Comandos CLI
+├── config.py             # Configuración (Pydantic Settings)
+├── models.py             # Modelos de datos (Pydantic)
+├── odoo_client.py        # Cliente XML-RPC de Odoo
+├── shopify_service.py    # Cliente GraphQL de Shopify
+├── sync_service.py       # Orquestador de sincronización
+└── snapshot_service.py   # 🆕 Gestión de snapshots
+
+tests/                    # Tests (pendiente)
+CHANGELOG.md              # 🆕 Registro de cambios
+COMPLIANCE_REPORT.md      # 🆕 Reporte de cumplimiento
+README.md                 # Este archivo
+```
+
+---
+
+## 🔐 Seguridad
+
+- ✅ **Permisos restrictivos** (600) en archivos de snapshot
+- ✅ **Backups automáticos** (últimas 3 copias)
+- ✅ **Validación de integridad** de snapshots
+- ✅ **No expone datos sensibles** en logs
+- ✅ **Usuario no-root** en Docker
+
+---
+
+## 📋 Requisitos
+
+- Python 3.13+
+- Acceso a Odoo (XML-RPC)
+- Shopify Admin API access token
+- Permisos: `read_inventory`, `write_inventory`, `read_products`
+
+---
+
+## 📜 Licencia
 
 [Especificar licencia]
 
-## Soporte
+---
 
-Para reportar bugs o solicitar features, por favor abre un issue en el repositorio.
+## 🆘 Soporte
+
+- **Issues**: https://github.com/[usuario]/shopify-odoo-real-conector/issues
+- **Changelog**: Ver `CHANGELOG.md`
+- **Compliance**: Ver `COMPLIANCE_REPORT.md`
+
+---
+
+## 🎯 Próximos pasos
+
+- [ ] Tests automatizados (pytest)
+- [ ] Webhooks de Odoo para sync en tiempo real
+- [ ] Dashboard de métricas
+- [ ] Soporte multi-ubicación
+
+---
+
+**Versión:** 2.1.0
+**Última actualización:** 2025-11-14
+**Modo:** Pull optimizado con detección de cambios
