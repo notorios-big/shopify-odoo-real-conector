@@ -5,7 +5,7 @@ Carga las variables de entorno necesarias para la operación del conector.
 """
 import os
 from pydantic_settings import BaseSettings
-from pydantic import Field, validator
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -64,7 +64,14 @@ class Settings(BaseSettings):
         description="Nivel de logging (DEBUG, INFO, WARNING, ERROR)"
     )
 
-    @validator('ODOO_URL')
+    # Configuración de snapshot
+    SNAPSHOT_DIR: str = Field(
+        default="./data",
+        description="Directorio donde se guardarán los snapshots"
+    )
+
+    @field_validator('ODOO_URL')
+    @classmethod
     def validate_odoo_url(cls, v):
         """Valida que la URL de Odoo tenga el formato correcto"""
         if not v.startswith(('http://', 'https://')):
@@ -73,7 +80,8 @@ class Settings(BaseSettings):
             v = v[:-1]  # Remover trailing slash
         return v
 
-    @validator('SHOPIFY_STORE_URL')
+    @field_validator('SHOPIFY_STORE_URL')
+    @classmethod
     def validate_store_url(cls, v):
         """Valida que la URL de Shopify tenga el formato correcto"""
         if not v.startswith('https://'):
@@ -82,7 +90,8 @@ class Settings(BaseSettings):
             v = v[:-1]  # Remover trailing slash
         return v
 
-    @validator('LOG_LEVEL')
+    @field_validator('LOG_LEVEL')
+    @classmethod
     def validate_log_level(cls, v):
         """Valida que el nivel de log sea válido"""
         valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']

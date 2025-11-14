@@ -48,3 +48,4 @@ Thumbs.db
 
 # Project specific
 shopify-odoo-conector-dev.zip
+data/  # Snapshots and local data
