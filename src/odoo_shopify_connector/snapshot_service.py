@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from .models import SyncSnapshot, SnapshotProduct, OdooStockQuant, ChangeDetectionResult
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,16 @@ logger = logging.getLogger(__name__)
 class SnapshotService:
     """Servicio para gestionar snapshots de sincronización"""
 
-    SNAPSHOT_PATH = Path("/home/claude/last_sync_snapshot.json")
-    BACKUP_PATH = Path("/home/claude/last_sync_snapshot.json.backup")
     MAX_BACKUPS = 3
 
     def __init__(self):
         """Inicializa el servicio de snapshots"""
+        # Usar configuración para el directorio de snapshots
+        snapshot_dir = Path(settings.SNAPSHOT_DIR)
+        self.SNAPSHOT_PATH = snapshot_dir / "last_sync_snapshot.json"
+        self.BACKUP_PATH = snapshot_dir / "last_sync_snapshot.json.backup"
+
+        # Crear directorio si no existe
         self.SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     def load_snapshot(self) -> Optional[SyncSnapshot]:
