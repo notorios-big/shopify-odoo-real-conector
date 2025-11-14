@@ -1,6 +1,7 @@
 """
 Modelos Pydantic para validación de datos del conector Odoo-Shopify.
 """
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 
@@ -92,7 +93,37 @@ class SyncSummary(BaseModel):
     successful: int = Field(description="Productos sincronizados exitosamente")
     failed: int = Field(description="Productos que fallaron")
     skipped: int = Field(description="Productos omitidos (sin SKU)")
+    unchanged: int = Field(default=0, description="Productos sin cambios (no sincronizados)")
+    new: int = Field(default=0, description="Productos nuevos detectados")
+    modified: int = Field(default=0, description="Productos modificados detectados")
+    deleted: int = Field(default=0, description="Productos eliminados de Odoo")
     results: list[SyncResult] = Field(default_factory=list, description="Resultados individuales")
     bulk_mode: bool = Field(default=False, description="Indica si se usó modo bulk")
     total_batches: int = Field(default=0, description="Número total de batches procesados")
     total_time_seconds: float = Field(default=0.0, description="Tiempo total de sincronización")
+    snapshot_updated: bool = Field(default=False, description="Indica si se actualizó el snapshot")
+
+
+class SnapshotProduct(BaseModel):
+    """Datos de un producto en el snapshot"""
+    sku: str = Field(description="SKU del producto")
+    quantity: int = Field(description="Cantidad disponible en Odoo")
+    product_name: str = Field(description="Nombre del producto")
+    product_id: int = Field(description="ID del producto en Odoo")
+    last_updated: datetime = Field(description="Última actualización")
+
+
+class SyncSnapshot(BaseModel):
+    """Snapshot del estado del inventario en la última sincronización"""
+    last_sync_timestamp: datetime = Field(description="Timestamp de la última sincronización")
+    total_products: int = Field(description="Total de productos en el snapshot")
+    products: dict[str, SnapshotProduct] = Field(default_factory=dict, description="Productos por SKU")
+
+
+class ChangeDetectionResult(BaseModel):
+    """Resultado de la detección de cambios"""
+    new_products: list[OdooStockQuant] = Field(default_factory=list, description="Productos nuevos")
+    modified_products: list[OdooStockQuant] = Field(default_factory=list, description="Productos modificados")
+    deleted_skus: list[str] = Field(default_factory=list, description="SKUs eliminados de Odoo")
+    unchanged_products: int = Field(default=0, description="Productos sin cambios")
+    total_changes: int = Field(default=0, description="Total de cambios detectados")

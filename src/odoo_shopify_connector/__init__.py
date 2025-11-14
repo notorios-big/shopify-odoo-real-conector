@@ -2,23 +2,35 @@
 Conector Odoo-Shopify Stock Synchronization.
 
 Un conector unidireccional (Odoo -> Shopify) para sincronización de inventario
-mediante consulta directa a la API de Odoo.
+con detección de cambios optimizada (v2.1.0).
 """
 from .api import app
 from .config import settings
 from .shopify_service import ShopifyService
 from .odoo_client import OdooClient
 from .sync_service import SyncService
-from .models import OdooStockQuant, SyncResult, SyncSummary
+from .snapshot_service import SnapshotService
+from .models import (
+    OdooStockQuant,
+    SyncResult,
+    SyncSummary,
+    SyncSnapshot,
+    SnapshotProduct,
+    ChangeDetectionResult,
+)
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __all__ = [
     "app",
     "settings",
     "ShopifyService",
     "OdooClient",
     "SyncService",
+    "SnapshotService",
     "OdooStockQuant",
     "SyncResult",
     "SyncSummary",
+    "SyncSnapshot",
+    "SnapshotProduct",
+    "ChangeDetectionResult",
 ]
