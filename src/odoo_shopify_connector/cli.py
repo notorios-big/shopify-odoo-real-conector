@@ -49,19 +49,26 @@ def test_connections():
     return 0 if overall == "OK" else 1
 
 
-def sync_inventory(verbose: bool = False):
+def sync_inventory(verbose: bool = False, bulk: bool = True):
     """Ejecuta la sincronización de inventario"""
+    mode_label = "BULK" if bulk else "SINGLE"
     print("\n" + "=" * 60)
-    print("SINCRONIZACIÓN DE INVENTARIO ODOO → SHOPIFY")
+    print(f"SINCRONIZACIÓN {mode_label} DE INVENTARIO ODOO → SHOPIFY")
     print("=" * 60 + "\n")
 
     print(f"Ubicación de Odoo: {settings.ODOO_LOCATION_ID}")
     print(f"Tienda Shopify: {settings.SHOPIFY_STORE_URL}")
+    print(f"Modo: {mode_label}")
     print()
 
     try:
         sync_service = SyncService()
-        summary = sync_service.sync_all_inventory()
+
+        # Usar bulk o single según la opción
+        if bulk:
+            summary = sync_service.sync_all_inventory_bulk()
+        else:
+            summary = sync_service.sync_all_inventory()
 
         print("\n" + "=" * 60)
         print("RESUMEN DE SINCRONIZACIÓN")
@@ -71,6 +78,11 @@ def sync_inventory(verbose: bool = False):
         print(f"Exitosos:                       {summary.successful}")
         print(f"Fallidos:                       {summary.failed}")
         print(f"Omitidos (sin SKU):             {summary.skipped}")
+
+        if summary.bulk_mode:
+            print(f"Batches procesados:             {summary.total_batches}")
+            print(f"Tiempo total:                   {summary.total_time_seconds:.2f}s")
+
         print()
 
         if verbose and summary.results:
@@ -127,9 +139,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos:
-  %(prog)s sync              Sincronizar inventario
-  %(prog)s sync --verbose    Sincronizar con detalles
-  %(prog)s test              Probar conexiones
+  %(prog)s sync                  Sincronizar inventario (BULK mode - recomendado)
+  %(prog)s sync --verbose        Sincronizar con detalles
+  %(prog)s sync --single         Usar modo single (producto por producto)
+  %(prog)s test                  Probar conexiones
         """
     )
 
@@ -141,6 +154,11 @@ Ejemplos:
         '-v', '--verbose',
         action='store_true',
         help='Mostrar detalles de cada producto'
+    )
+    sync_parser.add_argument(
+        '--single',
+        action='store_true',
+        help='Usar modo single (producto por producto) en lugar de bulk'
     )
 
     # Comando 'test'
@@ -155,7 +173,9 @@ Ejemplos:
     if args.command == 'test':
         return test_connections()
     elif args.command == 'sync':
-        return sync_inventory(verbose=args.verbose)
+        # Usar bulk por defecto, single solo si se especifica
+        use_bulk = not args.single
+        return sync_inventory(verbose=args.verbose, bulk=use_bulk)
 
     return 0
 

@@ -26,14 +26,39 @@ Este conector lee el inventario completo de una ubicación específica en Odoo y
 
 ## Características
 
+✅ **Actualización MASIVA (Bulk)** - Hasta 250 productos por batch
 ✅ Consulta directa a Odoo via XML-RPC
 ✅ Sincronización de ubicación específica (ID: 28)
 ✅ Búsqueda de productos por SKU
-✅ Actualización automática de inventario en Shopify
+✅ **Retry automático con exponential backoff**
+✅ **Monitoreo de rate limits** de Shopify
 ✅ API REST con endpoints de sincronización
 ✅ CLI para sincronización desde línea de comandos
 ✅ Logging detallado de operaciones
 ✅ Soporte para sincronización en background
+
+### ⚡ Modo Bulk (Recomendado)
+
+El conector usa **actualización masiva** por defecto para máxima eficiencia:
+
+- **Batching automático**: Agrupa hasta 250 items por llamada GraphQL
+- **Rate limit handling**: Retry inteligente con backoff exponencial (1s, 2s, 4s, 8s)
+- **Monitoreo en tiempo real**: Tracking de puntos GraphQL disponibles
+- **Reintentos automáticos**: Hasta 4 intentos en errores de red/servidor
+- **Performance**: 10-50x más rápido que modo single para inventarios grandes
+
+**Mutación GraphQL usada:**
+```graphql
+mutation BulkUpdateInventory($adjustments: [InventoryAdjustItemInput!]!, $locationId: ID!) {
+  inventoryBulkAdjustQuantityAtLocation(
+    inventoryItemAdjustments: $adjustments
+    locationId: $locationId
+  ) {
+    inventoryLevels { id available }
+    userErrors { field message }
+  }
+}
+```
 
 ## Requisitos
 
@@ -121,12 +146,17 @@ La forma más simple de sincronizar:
 # Probar conexiones con Odoo y Shopify
 python -m odoo_shopify_connector.cli test
 
-# Sincronizar inventario
+# Sincronizar inventario (BULK mode - recomendado)
 python -m odoo_shopify_connector.cli sync
 
 # Sincronizar con detalles de cada producto
 python -m odoo_shopify_connector.cli sync --verbose
+
+# Usar modo single (producto por producto) - más lento
+python -m odoo_shopify_connector.cli sync --single
 ```
+
+**Nota:** El CLI usa **modo bulk por defecto** para mejor performance.
 
 ### Opción 2: API REST
 
@@ -162,17 +192,23 @@ curl http://localhost:8000/test-connections
 ```
 Prueba las conexiones con Odoo y Shopify.
 
-**POST /sync**
+**POST /sync** (⚡ BULK - Recomendado)
 ```bash
 curl -X POST http://localhost:8000/sync
 ```
-Sincroniza todo el inventario (puede tardar dependiendo del número de productos).
+Sincroniza todo el inventario usando modo BULK (actualización masiva en batches de hasta 250 items).
+
+**POST /sync/single**
+```bash
+curl -X POST http://localhost:8000/sync/single
+```
+Sincroniza producto por producto (modo tradicional, más lento).
 
 **POST /sync/async**
 ```bash
 curl -X POST http://localhost:8000/sync/async
 ```
-Inicia la sincronización en segundo plano (retorna inmediatamente).
+Inicia la sincronización BULK en segundo plano (retorna inmediatamente).
 
 ### Documentación de la API
 
@@ -254,7 +290,7 @@ Para cada producto de Odoo:
 
 ## Programar Sincronización Periódica
 
-### Con cron (Linux)
+### Con cron (Linux) - Cada 3 minutos ⏰
 
 Edita el crontab:
 
@@ -262,19 +298,32 @@ Edita el crontab:
 crontab -e
 ```
 
-Agrega una línea para sincronizar cada hora:
+Agrega una línea para sincronizar **cada 3 minutos** (recomendado):
 
 ```cron
+*/3 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
+```
+
+Otras opciones de intervalo:
+
+```cron
+# Cada 5 minutos
+*/5 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
+
+# Cada 10 minutos
+*/10 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
+
+# Cada hora
 0 * * * * cd /ruta/al/proyecto && /ruta/al/venv/bin/python -m odoo_shopify_connector.cli sync >> /var/log/odoo-shopify-sync.log 2>&1
 ```
 
-### Con systemd timer (Linux)
+### Con systemd timer (Linux) - Cada 3 minutos ⏰
 
 Crea `/etc/systemd/system/odoo-shopify-sync.service`:
 
 ```ini
 [Unit]
-Description=Sincronización Odoo-Shopify
+Description=Sincronización Odoo-Shopify BULK
 
 [Service]
 Type=oneshot
@@ -289,11 +338,11 @@ Crea `/etc/systemd/system/odoo-shopify-sync.timer`:
 
 ```ini
 [Unit]
-Description=Sincronización Odoo-Shopify cada hora
+Description=Sincronización Odoo-Shopify cada 3 minutos
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=1h
+OnBootSec=1min
+OnUnitActiveSec=3min
 
 [Install]
 WantedBy=timers.target

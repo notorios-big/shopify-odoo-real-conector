@@ -54,6 +54,36 @@ class SyncResult(BaseModel):
     delta: int | None = Field(default=None, description="Ajuste aplicado")
 
 
+class BulkInventoryAdjustment(BaseModel):
+    """
+    Modelo para representar un ajuste de inventario en bulk.
+    """
+    inventory_item_id: str = Field(description="ID del inventory item en Shopify")
+    available_delta: int = Field(description="Delta a ajustar")
+    sku: str | None = Field(default=None, description="SKU del producto (para tracking)")
+
+    class Config:
+        """Configuración del modelo"""
+        json_schema_extra = {
+            "example": {
+                "inventory_item_id": "gid://shopify/InventoryItem/12345",
+                "available_delta": 5,
+                "sku": "PROD-001"
+            }
+        }
+
+
+class BulkUpdateResult(BaseModel):
+    """
+    Modelo para el resultado de una actualización bulk.
+    """
+    success: bool = Field(description="Indica si la operación fue exitosa")
+    items_updated: int = Field(description="Número de items actualizados")
+    items_failed: int = Field(description="Número de items que fallaron")
+    user_errors: list[dict] = Field(default_factory=list, description="Errores reportados por Shopify")
+    throttle_status: dict | None = Field(default=None, description="Estado del throttle/rate limit")
+
+
 class SyncSummary(BaseModel):
     """
     Modelo para el resumen de una sincronización completa.
@@ -63,3 +93,6 @@ class SyncSummary(BaseModel):
     failed: int = Field(description="Productos que fallaron")
     skipped: int = Field(description="Productos omitidos (sin SKU)")
     results: list[SyncResult] = Field(default_factory=list, description="Resultados individuales")
+    bulk_mode: bool = Field(default=False, description="Indica si se usó modo bulk")
+    total_batches: int = Field(default=0, description="Número total de batches procesados")
+    total_time_seconds: float = Field(default=0.0, description="Tiempo total de sincronización")

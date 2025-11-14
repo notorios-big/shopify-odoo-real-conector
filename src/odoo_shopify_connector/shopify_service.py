@@ -2,13 +2,19 @@
 Servicio de Shopify para sincronización de inventario vía GraphQL API.
 """
 import logging
-from typing import Optional
+import time
+from typing import Optional, List, Dict, Tuple
 import requests
 
-from .models import ShopifyInventoryUpdate
+from .models import ShopifyInventoryUpdate, BulkInventoryAdjustment
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class RateLimitExceeded(Exception):
+    """Excepción para cuando se excede el rate limit"""
+    pass
 
 
 class ShopifyGraphQLError(Exception):
@@ -95,6 +101,33 @@ class ShopifyService:
     }
     """
 
+    BULK_ADJUST_INVENTORY_MUTATION = """
+    mutation BulkUpdateInventory($adjustments: [InventoryAdjustItemInput!]!, $locationId: ID!) {
+      inventoryBulkAdjustQuantityAtLocation(
+        inventoryItemAdjustments: $adjustments
+        locationId: $locationId
+      ) {
+        inventoryLevels {
+          id
+          available
+          item {
+            id
+            sku
+          }
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+    """
+
+    # Constantes para rate limiting y batching
+    MAX_BATCH_SIZE = 250  # Máximo de items por batch según Shopify
+    MAX_RETRIES = 4  # Máximo de reintentos
+    INITIAL_BACKOFF = 1  # Backoff inicial en segundos
+
     def __init__(self):
         """Inicializa el servicio de Shopify"""
         self.graphql_endpoint = (
@@ -107,48 +140,105 @@ class ShopifyService:
             'Accept': 'application/json'
         }
         self._cached_location_id: Optional[str] = None
+        self.total_api_calls = 0
+        self.total_retries = 0
 
-    def _run_query(self, query: str, variables: dict) -> dict:
+    def _run_query(self, query: str, variables: dict, retry_count: int = 0) -> Tuple[dict, dict]:
         """
-        Ejecuta una consulta o mutación GraphQL.
+        Ejecuta una consulta o mutación GraphQL con retry automático.
 
         Args:
             query: La consulta o mutación GraphQL
             variables: Variables para la consulta
+            retry_count: Número de reintentos realizados
 
         Returns:
-            dict: Datos de respuesta
+            Tuple[dict, dict]: (datos de respuesta, información de extensiones/throttle)
 
         Raises:
             ShopifyGraphQLError: Si hay errores en la respuesta o la petición falla
+            RateLimitExceeded: Si se excede el rate limit después de todos los reintentos
         """
         payload = {'query': query, 'variables': variables}
-        logger.debug(f"Ejecutando GraphQL query: {query[:100]}...")
+        logger.debug(f"Ejecutando GraphQL query (intento {retry_count + 1}): {query[:100]}...")
 
         try:
+            self.total_api_calls += 1
             response = requests.post(
                 self.graphql_endpoint,
                 headers=self.headers,
                 json=payload,
-                timeout=30
+                timeout=60  # Aumentado para bulk operations
             )
+
+            # Manejar throttling (429)
+            if response.status_code == 429:
+                if retry_count < self.MAX_RETRIES:
+                    backoff_time = self.INITIAL_BACKOFF * (2 ** retry_count)
+                    logger.warning(f"Rate limit alcanzado. Esperando {backoff_time}s antes de reintentar...")
+                    self.total_retries += 1
+                    time.sleep(backoff_time)
+                    return self._run_query(query, variables, retry_count + 1)
+                else:
+                    raise RateLimitExceeded("Se excedió el rate limit después de todos los reintentos")
+
             response.raise_for_status()
             data = response.json()
+
+            # Extraer información de throttling/cost de extensions
+            extensions = data.get('extensions', {})
+            throttle_status = extensions.get('cost', {})
+
+            if throttle_status:
+                logger.debug(
+                    f"GraphQL Cost - Requested: {throttle_status.get('requestedQueryCost', 'N/A')}, "
+                    f"Available: {throttle_status.get('throttleStatus', {}).get('currentlyAvailable', 'N/A')}, "
+                    f"Restore Rate: {throttle_status.get('throttleStatus', {}).get('restoreRate', 'N/A')}/s"
+                )
 
             if 'errors' in data:
                 error_msg = f"GraphQL errors: {data['errors']}"
                 logger.error(error_msg)
+
+                # Verificar si es un error de throttling
+                if any('throttled' in str(err).lower() for err in data['errors']):
+                    if retry_count < self.MAX_RETRIES:
+                        backoff_time = self.INITIAL_BACKOFF * (2 ** retry_count)
+                        logger.warning(f"Throttled. Esperando {backoff_time}s antes de reintentar...")
+                        self.total_retries += 1
+                        time.sleep(backoff_time)
+                        return self._run_query(query, variables, retry_count + 1)
+
                 raise ShopifyGraphQLError(error_msg)
 
-            return data.get('data', {})
+            return data.get('data', {}), extensions
 
         except requests.exceptions.HTTPError as e:
             error_msg = f"HTTP error: {e}, Response: {response.text}"
             logger.error(error_msg)
+
+            # Reintentar en errores 5xx
+            if response.status_code >= 500 and retry_count < self.MAX_RETRIES:
+                backoff_time = self.INITIAL_BACKOFF * (2 ** retry_count)
+                logger.warning(f"Error de servidor. Esperando {backoff_time}s antes de reintentar...")
+                self.total_retries += 1
+                time.sleep(backoff_time)
+                return self._run_query(query, variables, retry_count + 1)
+
             raise ShopifyGraphQLError(error_msg)
+
         except requests.exceptions.RequestException as e:
             error_msg = f"Request error: {e}"
             logger.error(error_msg)
+
+            # Reintentar en errores de red
+            if retry_count < self.MAX_RETRIES:
+                backoff_time = self.INITIAL_BACKOFF * (2 ** retry_count)
+                logger.warning(f"Error de red. Esperando {backoff_time}s antes de reintentar...")
+                self.total_retries += 1
+                time.sleep(backoff_time)
+                return self._run_query(query, variables, retry_count + 1)
+
             raise ShopifyGraphQLError(error_msg)
 
     def get_location_id(self) -> str:
@@ -168,7 +258,7 @@ class ShopifyService:
             return self._cached_location_id
 
         logger.info("Obteniendo ubicación de Shopify...")
-        data = self._run_query(self.GET_LOCATION_QUERY, {})
+        data, _ = self._run_query(self.GET_LOCATION_QUERY, {})
 
         edges = data.get('locations', {}).get('edges', [])
         if not edges:
@@ -200,7 +290,7 @@ class ShopifyService:
         search_query = f"sku:{sku}"
         variables = {"sku": search_query}
 
-        data = self._run_query(self.GET_VARIANT_BY_SKU_QUERY, variables)
+        data, _ = self._run_query(self.GET_VARIANT_BY_SKU_QUERY, variables)
 
         edges = data.get('productVariants', {}).get('edges', [])
         if not edges:
@@ -260,7 +350,7 @@ class ShopifyService:
             "delta": inventory_update.delta
         }
 
-        data = self._run_query(self.ADJUST_INVENTORY_MUTATION, variables)
+        data, _ = self._run_query(self.ADJUST_INVENTORY_MUTATION, variables)
 
         user_errors = data.get('inventoryAdjustQuantities', {}).get('userErrors', [])
         if user_errors:
@@ -329,3 +419,151 @@ class ShopifyService:
                 "message": f"Error al sincronizar: {str(e)}",
                 "sku": sku
             }
+
+    def bulk_adjust_inventory(
+        self,
+        adjustments: List['BulkInventoryAdjustment'],
+        location_id: str
+    ) -> 'BulkUpdateResult':
+        """
+        Ajusta el inventario de múltiples items en una sola llamada (bulk).
+
+        Args:
+            adjustments: Lista de ajustes de inventario (máximo 250)
+            location_id: ID de la ubicación en Shopify
+
+        Returns:
+            BulkUpdateResult con el resultado de la operación
+
+        Raises:
+            ShopifyGraphQLError: Si hay errores en la mutación
+        """
+        from .models import BulkUpdateResult
+
+        if len(adjustments) > self.MAX_BATCH_SIZE:
+            raise ValueError(f"Máximo {self.MAX_BATCH_SIZE} items por batch, recibidos: {len(adjustments)}")
+
+        if not adjustments:
+            logger.warning("No hay ajustes para procesar")
+            return BulkUpdateResult(
+                success=True,
+                items_updated=0,
+                items_failed=0,
+                user_errors=[],
+                throttle_status=None
+            )
+
+        logger.info(f"Ajustando inventario en bulk: {len(adjustments)} items")
+
+        # Preparar variables para la mutación
+        # Filtrar solo los ajustes con delta != 0
+        filtered_adjustments = [adj for adj in adjustments if adj.available_delta != 0]
+
+        if not filtered_adjustments:
+            logger.info("Todos los deltas son 0, no se requiere ajuste")
+            return BulkUpdateResult(
+                success=True,
+                items_updated=0,
+                items_failed=0,
+                user_errors=[],
+                throttle_status=None
+            )
+
+        # Construir input para la mutación
+        adjustment_inputs = [
+            {
+                "inventoryItemId": adj.inventory_item_id,
+                "availableDelta": adj.available_delta
+            }
+            for adj in filtered_adjustments
+        ]
+
+        variables = {
+            "adjustments": adjustment_inputs,
+            "locationId": location_id
+        }
+
+        try:
+            start_time = time.time()
+            data, extensions = self._run_query(self.BULK_ADJUST_INVENTORY_MUTATION, variables)
+            elapsed_time = time.time() - start_time
+
+            logger.info(f"Bulk mutation completada en {elapsed_time:.2f}s")
+
+            # Procesar respuesta
+            bulk_result = data.get('inventoryBulkAdjustQuantityAtLocation', {})
+            inventory_levels = bulk_result.get('inventoryLevels', [])
+            user_errors = bulk_result.get('userErrors', [])
+
+            # Extraer throttle status
+            throttle_status = extensions.get('cost', {}).get('throttleStatus', {}) if extensions else None
+
+            items_updated = len(inventory_levels)
+            items_failed = len(filtered_adjustments) - items_updated
+
+            if user_errors:
+                logger.warning(f"Errores en bulk update: {user_errors}")
+
+            result = BulkUpdateResult(
+                success=len(user_errors) == 0,
+                items_updated=items_updated,
+                items_failed=items_failed,
+                user_errors=user_errors,
+                throttle_status=throttle_status
+            )
+
+            logger.info(
+                f"Bulk update: {items_updated} exitosos, {items_failed} fallidos, "
+                f"{len(user_errors)} errores"
+            )
+
+            return result
+
+        except (ShopifyGraphQLError, RateLimitExceeded) as e:
+            logger.error(f"Error en bulk adjust inventory: {e}")
+            return BulkUpdateResult(
+                success=False,
+                items_updated=0,
+                items_failed=len(filtered_adjustments),
+                user_errors=[{"message": str(e)}],
+                throttle_status=None
+            )
+
+    def create_batches(
+        self,
+        adjustments: List['BulkInventoryAdjustment'],
+        batch_size: int = None
+    ) -> List[List['BulkInventoryAdjustment']]:
+        """
+        Divide una lista de ajustes en batches de tamaño máximo.
+
+        Args:
+            adjustments: Lista de ajustes
+            batch_size: Tamaño máximo de cada batch (default: MAX_BATCH_SIZE)
+
+        Returns:
+            Lista de batches
+        """
+        if batch_size is None:
+            batch_size = self.MAX_BATCH_SIZE
+
+        batches = []
+        for i in range(0, len(adjustments), batch_size):
+            batch = adjustments[i:i + batch_size]
+            batches.append(batch)
+
+        logger.info(f"Creados {len(batches)} batches de hasta {batch_size} items")
+        return batches
+
+    def get_stats(self) -> dict:
+        """
+        Obtiene estadísticas de uso del servicio.
+
+        Returns:
+            dict con estadísticas
+        """
+        return {
+            "total_api_calls": self.total_api_calls,
+            "total_retries": self.total_retries,
+            "cached_location_id": self._cached_location_id
+        }

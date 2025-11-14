@@ -106,24 +106,64 @@ async def test_connections():
 )
 async def sync_inventory() -> SyncSummary:
     """
-    Sincroniza todo el inventario de la ubicación de Odoo con Shopify.
+    Sincroniza todo el inventario usando actualización masiva (BULK - RECOMENDADO).
 
-    Este endpoint:
+    Este endpoint usa el modo bulk para máxima eficiencia:
     1. Lee todo el inventario de la ubicación configurada en Odoo
-    2. Para cada producto con SKU, sincroniza el stock con Shopify
-    3. Retorna un resumen detallado de la operación
+    2. Agrupa productos en batches de hasta 250 items
+    3. Actualiza cada batch con una sola llamada GraphQL
+    4. Incluye retry automático y monitoreo de rate limits
 
     Returns:
-        SyncSummary: Resumen de la sincronización con resultados por producto
+        SyncSummary: Resumen de la sincronización con estadísticas de batches
 
     Raises:
         HTTPException 500: Si hay error al conectar con Odoo
     """
-    logger.info("Iniciando sincronización manual de inventario...")
+    logger.info("Iniciando sincronización BULK de inventario...")
+
+    try:
+        summary = sync_service.sync_all_inventory_bulk()
+        logger.info(
+            f"Sincronización BULK completada: {summary.successful}/{summary.total_products} exitosos, "
+            f"{summary.total_batches} batches, {summary.total_time_seconds:.2f}s"
+        )
+        return summary
+
+    except OdooConnectionError as e:
+        logger.error(f"Error de conexión con Odoo: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error al conectar con Odoo: {str(e)}"
+        )
+
+    except Exception as e:
+        logger.exception(f"Error inesperado durante sincronización: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
+
+
+@app.post("/sync/single", response_model=SyncSummary)
+async def sync_inventory_single() -> SyncSummary:
+    """
+    Sincroniza inventario producto por producto (modo tradicional).
+
+    Este modo es más lento pero puede ser útil para debugging.
+    Se recomienda usar el endpoint /sync (bulk) para producción.
+
+    Returns:
+        SyncSummary: Resumen de la sincronización
+
+    Raises:
+        HTTPException 500: Si hay error al conectar con Odoo
+    """
+    logger.info("Iniciando sincronización SINGLE de inventario...")
 
     try:
         summary = sync_service.sync_all_inventory()
-        logger.info(f"Sincronización completada: {summary.successful}/{summary.total_products} exitosos")
+        logger.info(f"Sincronización SINGLE completada: {summary.successful}/{summary.total_products} exitosos")
         return summary
 
     except OdooConnectionError as e:
@@ -144,21 +184,22 @@ async def sync_inventory() -> SyncSummary:
 @app.post("/sync/async")
 async def sync_inventory_async(background_tasks: BackgroundTasks):
     """
-    Inicia la sincronización de inventario en segundo plano.
+    Inicia la sincronización de inventario BULK en segundo plano.
 
     Este endpoint retorna inmediatamente y ejecuta la sincronización
-    en background. Útil para evitar timeouts en sincronizaciones largas.
+    en background. Útil para evitar timeouts en sincronizaciones muy largas.
 
     Returns:
         Mensaje de confirmación
     """
-    logger.info("Iniciando sincronización en background...")
+    logger.info("Iniciando sincronización BULK en background...")
 
     def run_sync():
         try:
-            summary = sync_service.sync_all_inventory()
+            summary = sync_service.sync_all_inventory_bulk()
             logger.info(
-                f"Sincronización background completada: {summary.successful}/{summary.total_products} exitosos"
+                f"Sincronización BULK background completada: {summary.successful}/{summary.total_products} exitosos, "
+                f"{summary.total_batches} batches, {summary.total_time_seconds:.2f}s"
             )
         except Exception as e:
             logger.exception(f"Error en sincronización background: {e}")
@@ -166,8 +207,9 @@ async def sync_inventory_async(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_sync)
 
     return {
-        "message": "Sincronización iniciada en segundo plano",
-        "status": "processing"
+        "message": "Sincronización BULK iniciada en segundo plano",
+        "status": "processing",
+        "mode": "bulk"
     }
 
 
